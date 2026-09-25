@@ -1,7 +1,8 @@
 # AI-detector benchmark: scoring, per-domain false positives, and input normalisation
 
 A reproducible harness for measuring AI-text detectors on [RAID](https://raid-bench.xyz),
-and three findings it produced. Everything runs against publicly downloadable
+a leaderboard of nine open detectors, and what building it revealed about how
+detector comparisons go wrong. Everything runs against publicly downloadable
 weights, so every number here can be checked independently.
 
 ```bash
@@ -10,7 +11,7 @@ python -m benchmark.run --fetch                              # RAID labelled spl
 python -m benchmark.run --detector textsight-v23-normalised
 ```
 
-The detector measured here is
+Findings 1-3 use
 [`textsightai/textsight-detector-v23-custom`](https://huggingface.co/textsightai/textsight-detector-v23-custom)
 — DeBERTa-v3-large, 435M parameters, public and ungated. `model.safetensors` is
 1,740,304,440 bytes, sha256
@@ -100,11 +101,105 @@ here; see [DISCLOSURE.md](DISCLOSURE.md) for why.
 
 ---
 
+## 4. Two ways a detector comparison silently breaks
+
+Running nine detectors through one harness turned up two failure modes that
+would quietly invalidate any comparison built without checking for them. Both
+are handled here automatically, and both are worth knowing about if you build
+your own.
+
+**Three of nine had reversed or undocumented label polarity.** `radar`,
+`openai-roberta-large` and `piratexx` rank human text *above* machine text under
+a naive reading of their label maps. Several models on the Hub expose bare
+`LABEL_0`/`LABEL_1` with no documented direction. Get it backwards and you invert
+a detector completely, reporting a strong one as far worse than random. Direction
+is therefore established empirically on a small labelled probe, not read off the
+config - see `detectors.orient`.
+
+**One of nine was trained on the benchmark.** RAID's test splits are blind, so
+measurement has to happen on its labelled `train_none` split - and a detector
+fine-tuned on RAID is then being evaluated on its own training data.
+`MayZhou/e5-small-lora-ai-generated-detector` declares `datasets: [liamdugan/raid]`
+and posts the highest score in the field by a wide margin, which is what
+in-domain evaluation looks like. `benchmark/contamination.py` reads each model's
+declared datasets and sorts results into three tiers so an in-domain score cannot
+sit at the top of a table of out-of-domain ones.
+
+Declared metadata is not proof. A model can omit its training data or describe it
+only in prose, so "nothing declared" means exactly that - not "verified clean".
+
+## 5. Leaderboard
+
+2,520 documents, seed 0, accuracy at 5% FPR with per-domain thresholds, scored on
+the log-odds margin, auto-oriented. `worst FPR` is the worst single domain's
+false-positive rate at one pooled 5% threshold - what a headline number hides.
+
+**No RAID overlap declared.** Status `undeclared` means the model publishes no
+dataset list, so contamination is unverified in either direction.
+
+| detector | acc@5%FPR | AUROC | worst FPR | contamination |
+|---|---|---|---|---|
+| textsight-v23 | **0.7174** | 0.8436 | 24.7% | undeclared |
+| textsight-v23-normalised | 0.7136 | 0.8422 | 24.7% | undeclared |
+| radar | 0.6712 | **0.8927** | 18.7% | undeclared |
+| piratexx | 0.6348 | 0.8176 | 18.7% | undeclared |
+| hc3-roberta | 0.4485 | 0.7280 | 22.0% | none declared |
+
+**Training data overlaps a RAID domain — read with care.**
+
+| detector | acc@5%FPR | AUROC | worst FPR | overlap |
+|---|---|---|---|---|
+| roberta-mixed | 0.8818 | 0.9397 | 12.7% | arXiv abstracts → `abstracts` |
+| openai-roberta-base | 0.6068 | 0.8439 | 13.3% | Wikipedia → `wiki` |
+| openai-roberta-large | 0.5879 | 0.8322 | 12.0% | Wikipedia → `wiki` |
+
+**Trained on RAID — not comparable.**
+
+| detector | acc@5%FPR | AUROC | worst FPR | |
+|---|---|---|---|---|
+| e5-small-lora | 0.9364 | 0.9867 | 9.3% | in-domain |
+
+Three things in that table are worth more than the ordering:
+
+**AUROC and threshold accuracy disagree.** `radar` has the best AUROC of any
+uncontaminated model (0.8927) and ranks below `textsight-v23` at the 5%
+operating point. Ranking quality and threshold behaviour are different
+properties, and a benchmark that reports only one of them will mislead you.
+
+**Every detector has a domain where it is far worse than its headline.** The
+worst-domain false-positive rate ranges from 9.3% to 24.7% against a 5% pooled
+target. Not one of the nine is uniform across text types.
+
+**`textsight-v23` has the highest worst-domain FPR in the field.** It leads on
+accuracy and is the most likely of these nine to falsely flag a human author in
+its weakest genre. Those are both true, and a comparison that reported only the
+first would be the kind of thing this repository exists to argue against.
+
+Reproduce with:
+
+```bash
+python -m benchmark.leaderboard                 # all detectors
+python -m benchmark.leaderboard --attacks       # also per-attack evasion
+```
+
+---
+
 ## What this measures, and what it does not
 
 **Model-level, not product-level.** This scores a classifier plus optional input
 normalisation. Commercial detectors wrap models in further signals and fusion
 logic; their numbers will differ.
+
+**Only open models are here.** Closed commercial detectors are absent because
+they cannot be measured reproducibly through an API that may change under you.
+That is a property of those products rather than an omission, but it does mean
+this leaderboard is not a market survey.
+
+**One entry is our own.** `textsight-v23` is published by the same account as
+this repository. That is a reason to check the numbers rather than take them -
+which is the entire point of shipping the code, the seed, and the checkpoint
+hash. It is also why the section above says plainly that our model has the worst
+worst-domain false-positive rate of the nine.
 
 **Synonym and paraphrase attacks are not implemented.** Both need a model or a
 thesaurus, and both are more damaging than anything included. **Every robustness

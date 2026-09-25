@@ -117,9 +117,64 @@ DETECTORS = {
     "textsight-v23-normalised": lambda: NormalizingDetector(
         HFSequenceClassifier(TEXTSIGHT_V23, "textsight-v23"),
         name="textsight-v23-normalised"),
-    # Open baselines. Add your own here.
-    "desklib": lambda: HFSequenceClassifier("desklib/ai-text-detector-v1.01", "desklib"),
+    # Open baselines, all standard sequence classifiers on the Hub. Download
+    # counts are a rough proxy for how widely each is actually used.
+    # RADAR also appears on the RAID leaderboard, which gives an external
+    # reference point for this harness.
+    "radar": lambda: HFSequenceClassifier(
+        "TrustSafeAI/RADAR-Vicuna-7B", "radar"),
+    "openai-roberta-base": lambda: HFSequenceClassifier(
+        "openai-community/roberta-base-openai-detector", "openai-roberta-base"),
+    "openai-roberta-large": lambda: HFSequenceClassifier(
+        "openai-community/roberta-large-openai-detector", "openai-roberta-large"),
+    "hc3-roberta": lambda: HFSequenceClassifier(
+        "Hello-SimpleAI/chatgpt-detector-roberta", "hc3-roberta"),
+    "piratexx": lambda: HFSequenceClassifier(
+        "PirateXX/AI-Content-Detector", "piratexx"),
+    "roberta-mixed": lambda: HFSequenceClassifier(
+        "andreas122001/roberta-mixed-detector", "roberta-mixed"),
+    "e5-small-lora": lambda: HFSequenceClassifier(
+        "MayZhou/e5-small-lora-ai-generated-detector", "e5-small-lora"),
+    # NOT included: desklib/ai-text-detector-v1.01 ships a custom
+    # DesklibAIDetectionModel class and needs trust_remote_code=True, so it does
+    # not load through AutoModelForSequenceClassification. Excluded rather than
+    # given a bespoke adapter that could quietly differ from how it is meant to
+    # be run.
 }
+
+
+def orient(det: Detector, texts: list[str], is_machine: list[bool]) -> int:
+    """Return +1 or -1 so that higher scores mean more machine-generated.
+
+    Every detector on the Hub orders its labels differently, and several use bare
+    LABEL_0/LABEL_1 with no documented polarity. Guessing from the label map is
+    unreliable, so the direction is established empirically on a small labelled
+    probe: if the scores rank human above machine, the sign is flipped. Without
+    this a comparison can silently invert a detector and report it as far worse
+    than it is, which would make the whole table meaningless.
+    """
+    s = det.score(texts)
+    pos = [v for v, m in zip(s, is_machine) if m]
+    neg = [v for v, m in zip(s, is_machine) if not m]
+    if not pos or not neg:
+        return 1
+    # Mann-Whitney direction: is a machine document usually scored higher?
+    wins = sum(1 for p in pos for n in neg if p > n)
+    ties = sum(1 for p in pos for n in neg if p == n)
+    auc = (wins + 0.5 * ties) / (len(pos) * len(neg))
+    return 1 if auc >= 0.5 else -1
+
+
+class OrientedDetector(Detector):
+    """A detector with its sign fixed so higher always means machine-generated."""
+
+    def __init__(self, inner: Detector, sign: int):
+        self.inner = inner
+        self.sign = sign
+        self.name = inner.name
+
+    def score(self, texts: list[str]) -> list[float]:
+        return [self.sign * v for v in self.inner.score(texts)]
 
 
 def build(name: str) -> Detector:
