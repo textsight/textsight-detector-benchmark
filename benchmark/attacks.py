@@ -9,9 +9,11 @@ Each attack takes (text, rate, rng) and returns perturbed text. `rate` is the
 per-character or per-token probability of perturbation; 0.15 is the default
 used for the published numbers.
 
-NOT IMPLEMENTED: synonym substitution and paraphrase. Both need a model or a
-thesaurus, and both are more damaging than anything here, so any robustness
-number produced by this file is an UPPER bound.
+Two attacks here need more than string manipulation and are optional as a
+result: `synonym` needs WordNet (`pip install nltk` plus
+`nltk.download("wordnet")`), and `paraphrase` needs a seq2seq model (see
+`benchmark/paraphrase.py`). Both are skipped with a warning if their dependency
+is missing, so the rest of the suite still runs.
 """
 import argparse
 import csv
@@ -55,6 +57,64 @@ def whitespace(text, rate, rnd):
             out.append(" ")
         out.append(ch)
     return "".join(out)
+
+
+_STOP = {
+    "the","a","an","and","or","but","if","of","to","in","on","at","for","with",
+    "as","by","is","are","was","were","be","been","being","it","its","this",
+    "that","these","those","from","has","have","had","not","no","do","does",
+    "did","will","would","can","could","should","may","might","must","than",
+    "then","so","such","there","their","they","he","she","we","you","i",
+}
+
+
+def _wordnet():
+    from nltk.corpus import wordnet as wn
+    wn.synsets("test")          # forces the corpus load, raises if absent
+    return wn
+
+
+def synonym(text, rate, rnd):
+    """Replace words with WordNet synonyms.
+
+    Unlike every other attack here this changes the words themselves, not their
+    encoding, so input normalisation cannot undo it. Function words are skipped -
+    substituting those produces obvious nonsense rather than a plausible edit,
+    which would overstate the attack.
+    """
+    wn = _wordnet()
+    out = []
+    for tok in text.split(" "):
+        core = tok.strip(".,;:!?()[]\"'").lower()
+        if (len(core) < 4 or core in _STOP or not core.isalpha()
+                or rnd.random() >= rate):
+            out.append(tok)
+            continue
+        lemmas = []
+        for syn in wn.synsets(core)[:4]:
+            for lem in syn.lemmas():
+                w = lem.name().replace("_", " ")
+                if w.lower() != core and " " not in w:
+                    lemmas.append(w)
+        if not lemmas:
+            out.append(tok)
+            continue
+        rep = rnd.choice(lemmas)
+        if core[0].isupper() or tok[:1].isupper():
+            rep = rep[:1].upper() + rep[1:]
+        out.append(tok.replace(tok.strip(".,;:!?()[]\"'"), rep, 1))
+    return " ".join(out)
+
+
+def paraphrase(text, rate, rnd):
+    """Rewrite a fraction of sentences with a seq2seq paraphraser.
+
+    Delegates to benchmark.paraphrase, which holds the model. Like `synonym`,
+    this alters meaning-bearing content rather than encoding, so normalisation
+    offers no defence.
+    """
+    from .paraphrase import paraphrase_text
+    return paraphrase_text(text, rate, rnd)
 
 
 def upper_lower(text, rate, rnd):
@@ -132,6 +192,8 @@ def insert_paragraphs(text, rate, rnd):
 
 ATTACKS = {
     "homoglyph": homoglyph,
+    "synonym": synonym,
+    "paraphrase": paraphrase,
     "zero_width": zero_width,
     "whitespace": whitespace,
     "upper_lower": upper_lower,
@@ -141,9 +203,9 @@ ATTACKS = {
     "alternative_spelling": alternative_spelling,
     "insert_paragraphs": insert_paragraphs,
 }
-# Not implemented: synonym and paraphrase. Both need a model or a thesaurus and
-# are the two attacks most likely to hurt, so their absence is a real gap in
-# any coverage claim made from these numbers.
+# `synonym` and `paraphrase` are the only two that change words rather than
+# encoding. They are also the two that input normalisation cannot defend against,
+# which is why they are worth the extra dependency.
 
 
 def main():

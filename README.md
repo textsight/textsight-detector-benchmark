@@ -96,8 +96,46 @@ weights — so a bare-checkpoint number measures the tokenizer's brittleness as
 much as the model's judgement. Benchmark detectors in the configuration they are
 deployed in, or say clearly that you did not.
 
+Normalisation defends attacks on the *encoding* of text. It does nothing against
+attacks that change the words themselves - synonym substitution and misspelling
+pass straight through it, and are among the strongest measured here. That split
+is the useful generalisation: input hygiene is cheap and closes a whole class,
+and the class it cannot close is the one that needs a better model.
+
 Per-attack figures are printed when you run the harness. They are not tabulated
 here; see [DISCLOSURE.md](DISCLOSURE.md) for why.
+
+## 3b. Paraphrasing machine text with another model makes it MORE detectable
+
+The obvious way to evade a detector is to rewrite the text. Measured against a
+public sentence-level paraphraser
+([`humarin/chatgpt_paraphraser_on_T5_base`](https://huggingface.co/humarin/chatgpt_paraphraser_on_T5_base)),
+rewriting a rising fraction of each document's sentences:
+
+| fraction of sentences rewritten | evasion TPR | vs clean |
+|---|---|---|
+| 0 (baseline) | 0.7136 | — |
+| 0.15 | 0.7068 | −0.007 |
+| 0.50 | 0.7045 | −0.009 |
+| **1.00** | **0.7318** | **+0.018** |
+
+Rewriting *everything* leaves the text **easier** to detect than leaving it
+alone. The reason is not mysterious once stated: the paraphraser is itself a
+language model, so its output carries its own machine-generated signature.
+Full paraphrasing does not launder a machine fingerprint, it replaces one with a
+fresher one.
+
+This matters because "just paraphrase it" is the assumed defeat condition for
+detectors, and for a small seq2seq model it is not one. It also means a
+dose-response curve is worth measuring: a single point at a low rate would have
+reported this attack as mildly effective, and a single point at full rate as
+mildly helpful, and neither alone is the finding.
+
+**What this does not show.** One paraphraser, sentence-level. RAID's own
+paraphrase attack uses DIPPER, a stronger paragraph-level model, and an
+instruction-tuned LLM asked to rewrite in a human register is untested here and
+is a different proposition entirely. Paraphrase is not solved - this particular
+paraphraser just is not the way to do it.
 
 ---
 
@@ -201,10 +239,13 @@ which is the entire point of shipping the code, the seed, and the checkpoint
 hash. It is also why the section above says plainly that our model has the worst
 worst-domain false-positive rate of the nine.
 
-**Synonym and paraphrase attacks are not implemented.** Both need a model or a
-thesaurus, and both are more damaging than anything included. **Every robustness
-figure here is an upper bound.** A detector that survives these nine attacks is
-unproven, not robust.
+**Eleven attacks, not the full space.** Synonym substitution and paraphrase are
+now measured (findings 3 and 3b); `synonym` needs WordNet and `paraphrase` needs
+a seq2seq model, and both are skipped with a warning if the dependency is absent.
+What remains untested is the strongest form of paraphrase - a paragraph-level
+model like DIPPER, or an instruction-tuned LLM told to rewrite in a human
+register. Robustness figures here are still an upper bound, just a tighter one
+than before.
 
 **RAID's test splits are blind.** `test.csv` and `test_none.csv` are
 `id,generation` only, labels held by the organisers, so nothing can be scored
