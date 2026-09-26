@@ -1,0 +1,368 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+\usepackage{url}
+
+\title{Measuring the Wrong Thing: Reporting, Preprocessing and Provenance\\
+in Machine-Generated Text Detector Evaluation}
+
+% TODO confirm author line and affiliation before submission.
+\author{Dipak Bhosale\\ Lacewing Technologies LLC\\ \texttt{chaincraftglobal@gmail.com}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We report a set of measurements taken while building a reproducible benchmark for
+machine-generated text (MGT) detectors on RAID. In each case a decision that is
+usually treated as incidental---how a score is reported, whether input is
+normalised, and where a model's training data came from---moved the headline
+number by more than the differences typically used to rank detectors against one
+another.
+
+Rounding a detector's softmax output to two decimal places placed 77.1\% of
+documents on tied scores and reduced accuracy at a 5\% false-positive rate from
+0.7144 to 0.5273, a gap of 18.7 points, with the area under the ROC curve almost
+unchanged (0.8426 versus 0.8336). Normalising input before scoring reduced the
+mean effect of nine mechanical perturbations from 0.6087 to 0.7014 evasion
+recall, eliminating four of them entirely, while leaving clean accuracy within
+noise. Fully paraphrasing machine-generated text with a sentence-level seq2seq
+model made it \emph{more} detectable than leaving it untouched ($+0.018$), not
+less. Of nine publicly available detectors we evaluated, three rank human text
+above machine text under a direct reading of their published label maps, and one
+declares the benchmark's own training split among its training data and duly
+posts the highest score in the field.
+
+None of these are claims about model quality. They are claims about what a
+benchmark measures when these factors go unexamined. We release the harness,
+the sample definition and the per-detector provenance checks.
+\end{abstract}
+
+\section{Introduction}
+
+Published comparisons of MGT detectors are typically differentiated by a few
+points of accuracy. This paper reports five measurements in which factors
+orthogonal to model quality moved that metric by a comparable or larger amount.
+
+Our interest is practical rather than theoretical. We built a harness to measure
+one detector, extended it to nine, and found that most of our engineering time
+went into controlling for artifacts rather than measuring models. The artifacts
+are the contribution.
+
+\paragraph{Conflict of interest.} One of the nine detectors we evaluate
+(\texttt{textsight-v23}) is published by the same organisation as this paper, and
+Sections~\ref{sec:rounding}--\ref{sec:paraphrase} use it as the single subject.
+This is a reason to check our numbers rather than accept them, which is why the
+harness, the sampling procedure, the random seed and the exact checkpoint hash
+are released. Section~\ref{sec:leaderboard} reports, among other things, that our
+own detector has the worst worst-domain false-positive rate of the nine.
+
+\section{Setup}
+
+\paragraph{Data.} RAID~\cite{raid} spans 8 English domains and 11 generators.
+Its test splits are distributed without labels, so all measurement here uses the
+labelled \texttt{train\_none} split (467{,}985 rows). We sample 150 human
+documents per domain and 15 per (domain, generator) cell by reservoir sampling in
+a single pass, seed 0, giving 2{,}520 documents. Human documents receive a much
+larger quota because they constitute 2.9\% of the corpus and a per-domain
+threshold at 5\% false positives cannot be fitted from fewer.
+
+\paragraph{Metric.} Following RAID, we fit a per-domain threshold at a target
+false-positive rate on human documents and report true-positive rate on machine
+documents (\emph{accuracy@5\%FPR}). Thresholds are fitted in-sample, which is
+optimistic but consistent across all conditions compared. We also report AUROC
+with explicit tie handling, which matters in Section~\ref{sec:rounding}.
+
+\paragraph{Attacks.} RAID publishes its attack taxonomy but not its
+implementations. Ours are independent reimplementations of the same ideas, so
+absolute numbers are not comparable to the RAID leaderboard; comparisons within
+this paper are.
+
+\section{Reporting a rounded probability costs 18.7 points}
+\label{sec:rounding}
+
+A classifier fine-tuned to low training loss saturates: its softmax returns
+values such as $0.99999999$. Rounded to two decimal places for display, these
+become exactly $1.0$. Documents the model ranked differently become
+indistinguishable.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+Score reported & Distinct values & Tied & acc@5\%FPR & AUROC \\
+\midrule
+Rounded probability & 578 / 2520 & 77.1\% & 0.5273 & 0.8336 \\
+Log-odds margin     & 2520 / 2520 & 0.0\% & \textbf{0.7144} & 0.8426 \\
+\bottomrule
+\end{tabular}
+\caption{Same model, same documents, same metric; only the reported score
+differs. Paired bootstrap on the difference (1000 resamples, stratified by
+domain and label): $+0.187$, 95\% CI $[+0.162, +0.196]$.}
+\end{table}
+
+AUROC barely moves. That is the diagnostic: the ranking was intact throughout,
+and rounding destroyed only a threshold's ability to act on it. In two of the
+eight domains, accuracy fell to exactly zero under the rounded score, because
+every human document in those domains tied at the ceiling and no threshold below
+it could achieve the target false-positive rate.
+
+The practical consequence is that a detector evaluated through its public
+API---which returns a rounded probability---may be measured 18.7 points below the
+model it wraps. We recommend that benchmarks require, and detectors expose, an
+unrounded monotone score.
+
+\section{One false-positive rate conceals a 25$\times$ spread}
+\label{sec:fpr}
+
+Fitting a single threshold at 5\% false positives across all human documents, as
+a deployed product with one decision boundary must, and then measuring that
+threshold's behaviour per domain:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrlr}
+\toprule
+Domain & FPR & Domain & FPR \\
+\midrule
+abstracts & 0.0\% & reviews & 0.0\% \\
+books     & 0.0\% & poetry  & 0.0\% \\
+news      & 0.0\% & wiki    & \textbf{15.3\%} \\
+reddit    & 0.0\% & recipes & \textbf{24.7\%} \\
+\midrule
+\multicolumn{3}{l}{\emph{pooled}} & \emph{5.0\%} \\
+\bottomrule
+\end{tabular}
+\caption{The pooled figure is 5.0\% by construction. Six domains see almost no
+false positives; one sees a quarter of its human documents flagged.}
+\end{table}
+
+Formulaic, list-structured prose---recipes, reference entries---is close in form
+to what these models learn to associate with machine generation. A single
+headline false-positive rate is an average over populations with materially
+different risk, and the population that bears the cost is invisible in it.
+
+\section{Input normalisation defends one class of attack and not the other}
+\label{sec:normalisation}
+
+Mechanical perturbations of detector input divide cleanly into two classes.
+\emph{Encoding} attacks leave the text visually identical to a reader while
+altering the byte sequence, so a subword tokenizer produces fragments unseen in
+training: homoglyph substitution, zero-width insertion, whitespace manipulation,
+alternative spellings. \emph{Semantic} attacks change the words themselves:
+synonym substitution, misspelling, case perturbation.
+
+Applying NFKC normalisation, Cyrillic/Greek confusable folding,
+invisible-character removal, whitespace repair and case repair before scoring:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrr}
+\toprule
+& Clean acc@5\%FPR & Mean evasion recall, 9 attacks \\
+\midrule
+Bare checkpoint            & 0.7174 & 0.6087 \\
++ input normalisation      & 0.7136 & \textbf{0.7014} \\
+\bottomrule
+\end{tabular}
+\caption{Clean accuracy unchanged within noise; mean robustness materially
+improved.}
+\end{table}
+
+Four of the nine perturbations fall to \emph{exactly} zero effect under
+normalisation. The residual is concentrated entirely in the semantic class, which
+normalisation cannot address by construction: synonym substitution reduces evasion
+recall from 0.7136 to 0.5720 and misspelling to 0.5455 with normalisation active.
+
+Two consequences follow. First, a bare checkpoint's robustness number measures
+tokenizer brittleness as much as model judgement, and detectors should be
+evaluated in the configuration they are deployed in. Second, input hygiene is
+cheap and closes an entire attack class; the class it cannot close is the one
+that requires a better model.
+
+\section{Fully paraphrasing machine text makes it more detectable}
+\label{sec:paraphrase}
+
+Paraphrase is the assumed defeat condition for MGT detection. We measured it as
+a dose--response curve rather than at a single strength, using a public
+sentence-level paraphraser~\cite{humarin}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrr}
+\toprule
+Sentences rewritten & Evasion recall & vs.\ clean \\
+\midrule
+0 (baseline) & 0.7136 & --- \\
+0.15 & 0.7068 & $-0.007$ \\
+0.50 & 0.7045 & $-0.009$ \\
+1.00 & \textbf{0.7318} & $\mathbf{+0.018}$ \\
+\bottomrule
+\end{tabular}
+\caption{Rewriting every sentence leaves the text easier to detect than leaving
+it alone.}
+\end{table}
+
+The mechanism is not obscure once stated: the paraphraser is itself a language
+model, so its output carries its own machine-generated signature. Full paraphrase
+does not launder a machine fingerprint; it substitutes a fresher one. A single
+measurement at a low rate would have reported a mildly effective attack, and one
+at full rate a mildly counterproductive one, and neither alone is the finding.
+
+We emphasise what this does not show. It is one sentence-level paraphraser. RAID
+uses DIPPER~\cite{dipper}, a stronger paragraph-level model, and an
+instruction-tuned LLM prompted to rewrite in a human register is untested here
+and is a materially different proposition. Paraphrase is not solved; this
+paraphraser is not the way to do it.
+
+\section{Provenance and polarity failures among published detectors}
+\label{sec:leaderboard}
+
+We evaluated nine publicly available detectors through one harness. Two failure
+modes appeared that would silently invalidate a comparison.
+
+\paragraph{Label polarity.} Three of the nine---RADAR~\cite{radar},
+\texttt{roberta-large-openai-detector} and \texttt{PirateXX/AI-Content-Detector}
+---rank human text above machine text under a direct reading of their published
+label maps. Several expose bare \texttt{LABEL\_0}/\texttt{LABEL\_1} with no
+documented direction. We therefore establish direction empirically on an 80
+document labelled probe rather than from metadata.
+
+\paragraph{Training-data contamination.} Because RAID's test splits are blind,
+measurement occurs on its labelled training split, and a detector fine-tuned on
+RAID is then evaluated on its own training data.
+\texttt{e5-small-lora-ai-generated-detector} declares
+\texttt{datasets: [liamdugan/raid]} and posts 0.9364, the highest score in the
+field by a wide margin. We read declared dataset metadata automatically and
+partition results into three tiers. Declared metadata is not proof: a model may
+omit its training data, so ``nothing declared'' means only that---including for
+our own entry.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrl}
+\toprule
+Detector & acc@5\%FPR & AUROC & Worst-domain FPR & Provenance \\
+\midrule
+\texttt{textsight-v23}        & 0.7174 & 0.8436 & \textbf{24.7\%} & undeclared \\
+\texttt{radar}                & 0.6712 & \textbf{0.8927} & 18.7\% & undeclared \\
+\texttt{piratexx}             & 0.6348 & 0.8176 & 18.7\% & undeclared \\
+\texttt{hc3-roberta}          & 0.4485 & 0.7280 & 22.0\% & none declared \\
+\midrule
+\texttt{roberta-mixed}        & 0.8818 & 0.9397 & 12.7\% & arXiv $\to$ abstracts \\
+\texttt{openai-roberta-base}  & 0.6068 & 0.8439 & 13.3\% & Wikipedia $\to$ wiki \\
+\texttt{openai-roberta-large} & 0.5879 & 0.8322 & 12.0\% & Wikipedia $\to$ wiki \\
+\midrule
+\texttt{e5-small-lora}        & 0.9364 & 0.9867 & 9.3\% & \textbf{trained on RAID} \\
+\bottomrule
+\end{tabular}
+\caption{Upper block: no RAID overlap declared. Middle: declared training data
+overlaps a RAID domain. Lower: trained on RAID, and therefore not comparable.}
+\end{table}
+
+Three observations matter more than the ordering. AUROC and threshold accuracy
+disagree: RADAR has the best AUROC of any uncontaminated entry and ranks below
+\texttt{textsight-v23} at the 5\% operating point, so ranking quality and
+threshold behaviour are distinct properties and reporting one is insufficient.
+Every detector has a domain substantially worse than its headline, spanning 9.3\%
+to 24.7\% against a 5\% pooled target. And our own entry has the worst
+worst-domain false-positive rate of the nine: it leads on accuracy and is the
+most likely of these to falsely flag a human author in its weakest genre.
+
+\section{Calibration}
+
+Sections~\ref{sec:rounding}--\ref{sec:leaderboard} concern ranking. A deployed
+detector also displays a number to a person. On 1{,}264 held-out documents
+(fitted on the complementary half), the rounded softmax displays $\geq 90\%$
+machine-generated for 118 of 600 \emph{human} documents (19.7\%), with expected
+calibration error 0.2267.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+Method & ECE & Brier & acc@5\%FPR & Human docs shown $\geq90\%$ \\
+\midrule
+Rounded softmax      & 0.2267 & 0.2290 & 0.5181 & 118/600 (19.7\%) \\
+Platt on margin      & 0.0976 & 0.1686 & 0.6837 & 0/600 \\
+Isotonic + interp.   & \textbf{0.0316} & \textbf{0.1551} & 0.6837 & 8/600 (1.3\%) \\
+\bottomrule
+\end{tabular}
+\caption{Both maps are strictly monotone in the margin, so accuracy@5\%FPR is
+identical to ranking on the raw margin. Isotonic regression is interpolated
+linearly between blocks; a step function reintroduces exactly the score ties of
+Section~\ref{sec:rounding}.}
+\end{table}
+
+Two notes. Plain logistic maximum likelihood diverges on this data---the margin
+is near-separable, so the estimate is unbounded---and requires target smoothing
+and regularisation. And a calibrated probability encodes the class prior of its
+fitting data: RAID is approximately 52\% machine-generated, so these coefficients
+are wrong in a predictable direction on traffic with a different base rate.
+Calibration fixes overconfidence, not domain bias: human recipes still display
+56\% on average, down from 82.6\%.
+
+\section{Limitations}
+
+Sections~\ref{sec:rounding}--\ref{sec:paraphrase} and the calibration results use
+a single detector, and generalise to other models only by argument. All
+measurement is on RAID's training split because its test splits are blind, and
+thresholds are fitted in-sample; both make absolute numbers optimistic, though
+comparisons within the paper are consistent. RAID's human text is web-scraped and
+does not represent any particular deployment's input distribution---the
+per-domain false-positive spread of Section~\ref{sec:fpr} should be read by
+domain, not pooled. Our attacks are reimplementations of RAID's published ideas
+rather than RAID's code. The strongest form of paraphrase, and adaptive attacks
+that optimise against a specific detector, are untested. Sample size is 2{,}520
+documents with 150 human documents per domain, giving 5\% granularity on
+per-domain false-positive estimates and no better. Only open models are
+evaluated; closed commercial detectors cannot be measured reproducibly through
+APIs that may change, which is a property of those products but does mean this is
+not a market survey.
+
+\section{Recommendations}
+
+For authors of MGT detector benchmarks:
+\begin{enumerate}\itemsep0pt
+\item Require an unrounded, monotone score. Do not benchmark a rounded
+probability (Section~\ref{sec:rounding}).
+\item Report AUROC \emph{and} accuracy at a fixed operating point. They disagree,
+and the disagreement is informative (Section~\ref{sec:leaderboard}).
+\item Report per-domain or per-subgroup false-positive rates. A pooled figure
+conceals the population that bears the cost (Section~\ref{sec:fpr}).
+\item Establish score polarity empirically. One third of the detectors we
+evaluated cannot be oriented from their metadata (Section~\ref{sec:leaderboard}).
+\item Check declared training data against the evaluation set, and partition
+rather than rank across contamination tiers (Section~\ref{sec:leaderboard}).
+\item State whether input normalisation was applied. It is worth roughly nine
+points of mean robustness and nothing on clean accuracy
+(Section~\ref{sec:normalisation}).
+\item Measure attacks as dose--response curves. Single-strength measurements of
+paraphrase are misleading in both directions (Section~\ref{sec:paraphrase}).
+\end{enumerate}
+
+\section*{Reproducibility}
+
+Harness, sampling code, attack implementations, provenance checks and the exact
+random seed: \url{https://github.com/textsight/textsight-detector-benchmark}.
+The detector of Sections~\ref{sec:rounding}--\ref{sec:paraphrase} is public and
+ungated; \texttt{model.safetensors} is 1{,}740{,}304{,}440 bytes with SHA-256
+\texttt{9177c456a91e41afc6e03583d81a63a5b81d5d0a96ecfd783cd5b8c234418443}.
+
+\begin{thebibliography}{9}
+\bibitem{raid} L.~Dugan et al. RAID: A Shared Benchmark for Robust Evaluation of
+Machine-Generated Text Detectors. ACL, 2024.
+\bibitem{radar} X.~Hu, P.-Y.~Chen, T.-Y.~Ho. RADAR: Robust AI-Text Detection via
+Adversarial Learning. NeurIPS, 2023.
+\bibitem{dipper} K.~Krishna et al. Paraphrasing Evades Detectors of AI-Generated
+Text, but Retrieval is an Effective Defense. NeurIPS, 2023.
+\bibitem{humarin} \texttt{humarin/chatgpt\_paraphraser\_on\_T5\_base}. Hugging
+Face model repository.
+\end{thebibliography}
+
+\end{document}

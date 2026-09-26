@@ -288,6 +288,13 @@ benchmark/evaluate.py    per-domain threshold at target FPR, tie-aware AUROC
 benchmark/run.py         CLI: sample, score, attack, report
 ```
 
+## Preprint
+
+A write-up of these findings is in [`paper/`](paper/) as LaTeX source. It is a
+measurement paper about evaluation artifacts rather than a claim that any detector
+is good: each finding is of the form "this factor moved the headline metric by
+more than the differences normally used to rank detectors against each other".
+
 ## Licence
 
 MIT. RAID is distributed by its own authors under their terms; this repository
